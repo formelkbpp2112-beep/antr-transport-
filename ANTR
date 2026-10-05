@@ -1,0 +1,741 @@
+app.tsx
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+import {
+  AlertCircle, ArrowDownRight, ArrowRight, BadgeCheck, BusFront,
+  CarFront, Check, ChevronRight, CircleHelp, Clock3, FileCheck2, FilePlus2,
+  ListFilter, MapPin, Bike, Search, ShieldAlert, ShieldCheck,
+  TicketCheck, X,
+} from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import {
+  getGetDashboardSummaryQueryKey,
+  getGetTransportRecordQueryKey,
+  getListTransportRecordsQueryKey,
+  getVerifyTransportRecordQueryKey,
+  useCreateTransportRecord,
+  useGetDashboardSummary,
+  useGetTransportRecord,
+  useListTransportRecords,
+  useVerifyTransportRecord,
+} from '@workspace/api-client-react';
+import type { TransportRecord, TransportCategory } from '@workspace/api-client-react';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form';
+import { Link, Route, Switch, useLocation, useParams, Router as WouterRouter } from 'wouter';
+import NotFound from '@/pages/not-found';
+import vallLogo from '@assets/0_IMG_1202_1791128943950.jpeg';
+import antrArtwork from '@assets/0_IMG_1204_1791128970260.jpeg';
+
+const client = new QueryClient();
+
+const categoryNames: Record<TransportCategory, string> = {
+  moto: 'Moto',
+  car: 'Taxi / voiture',
+  bus: 'Bus / poids lourd',
+  taxi: 'Taxi',
+  minibus: 'Taxi-bus / minibus',
+  moto_taxi: 'Moto-taxi',
+  tricycle_taxi: 'Tricycle-taxi',
+  freight: 'Transport de marchandises',
+};
+const categoryIcons: Record<TransportCategory, typeof Bike> = {
+  moto: Bike,
+  car: CarFront,
+  bus: BusFront,
+  taxi: CarFront,
+  minibus: BusFront,
+  moto_taxi: Bike,
+  tricycle_taxi: Bike,
+  freight: BusFront,
+};
+const categoryRates: Record<TransportCategory, number> = {
+  moto: 1500,
+  car: 3000,
+  bus: 5500,
+  taxi: 3000,
+  minibus: 5500,
+  moto_taxi: 1500,
+  tricycle_taxi: 1500,
+  freight: 5500,
+};
+const categoryChoices = [
+  'taxi',
+  'minibus',
+  'bus',
+  'moto_taxi',
+  'tricycle_taxi',
+  'freight',
+] as const satisfies TransportCategory[];
+const categoryDescriptions: Record<(typeof categoryChoices)[number], string> = {
+  taxi: 'Voiture · 3 000 FC',
+  minibus: 'Minibus · 5 500 FC',
+  bus: 'Bus · 5 500 FC',
+  moto_taxi: 'Moto · 1 500 FC',
+  tricycle_taxi: 'Tricycle · 1 500 FC',
+  freight: 'Marchandises · 5 500 FC',
+};
+const vehicleSuggestions: Record<
+  (typeof categoryChoices)[number],
+  { makes: string[]; models: string[] }
+> = {
+  taxi: {
+    makes: ['Toyota', 'Nissan', 'Honda', 'Mazda'],
+    models: ['IST', 'Vitz', 'Corolla', 'Belta', 'Yaris', 'Starlet', 'Probox'],
+  },
+  minibus: {
+    makes: ['Toyota', 'Mitsubishi', 'Mercedes-Benz', 'Iveco', 'Isuzu'],
+    models: ['Hiace', 'Coaster', 'Rosa', 'Sprinter', 'Daily', 'NPR'],
+  },
+  bus: {
+    makes: ['Toyota', 'Mitsubishi', 'Mercedes-Benz', 'Iveco', 'Isuzu'],
+    models: ['Coaster', 'Rosa', 'Bus', 'Autocar'],
+  },
+  moto_taxi: {
+    makes: ['TVS', 'Haojue', 'Lifan', 'Senke', 'Yamaha'],
+    models: ['HLX', 'Boxer', 'Star', 'YBR', 'Autre moto'],
+  },
+  tricycle_taxi: {
+    makes: ['Bajaj', 'Piaggio', 'TVS'],
+    models: ['RE', 'Ape', 'King Deluxe', 'Autre tricycle'],
+  },
+  freight: {
+    makes: ['Iveco', 'Isuzu', 'Mercedes-Benz', 'Mitsubishi', 'Toyota'],
+    models: ['Daily', 'NPR', 'Canter', 'Hilux', 'Camion'],
+  },
+};
+const money = (value?: number) => `${new Intl.NumberFormat('fr-FR').format(value ?? 0)} FC`;
+const todayInKinshasa = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Kinshasa',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find(item => item.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+};
+const normalizePermit = (value: string) =>
+  value.trim().replace(/\s+/g, ' ').toLocaleUpperCase('fr');
+const inputCategoryForRecord = (
+  category: TransportCategory,
+): (typeof categoryChoices)[number] => {
+  if (category === 'moto') return 'moto_taxi';
+  if (category === 'car') return 'taxi';
+  return category;
+};
+const dateText = (value?: string) => value
+  ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  : '—';
+const shortId = (id: string) => id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+const recordFormSchema = z.object({
+  driverName: z.string().trim().min(2, 'Saisissez au moins 2 caractères.').max(120),
+  permitNumber: z.string().trim().min(1, 'Le numéro de permis démo est requis.').max(40),
+  licensePlate: z.string().trim().min(2, 'Saisissez une plaque valide.').max(24),
+  vehicleMake: z.string().trim().min(1, 'La marque est requise.').max(40),
+  vehicleModel: z.string().trim().min(1, 'Le modèle est requis.').max(80),
+  vehicleYear: z.coerce.number().int().min(1950).max(2100),
+  wheelCount: z.coerce.number().int().min(2).max(18),
+  vehicleCategory: z.enum([
+    'taxi',
+    'minibus',
+    'bus',
+    'moto_taxi',
+    'tricycle_taxi',
+    'freight',
+  ]),
+  serviceDate: z.string().min(1, 'Choisissez une date de service.'),
+  shiftStart: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/, 'Heure de début invalide.'),
+  shiftEnd: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/, 'Heure de fin invalide.'),
+}).refine(values => values.shiftEnd > values.shiftStart, {
+  message: 'L’heure de fin doit être après l’heure de début.',
+  path: ['shiftEnd'],
+});
+type RecordFormValues = z.infer<typeof recordFormSchema>;
+
+function AppFrame({ children }: { children: ReactNode }) {
+  const [path] = useLocation();
+  const links = [
+    { href: '/', label: 'Vue d’ensemble', icon: ListFilter },
+    { href: '/records', label: 'Registres démo', icon: FileCheck2 },
+    { href: '/new', label: 'Nouveau reçu', icon: FilePlus2 },
+  ];
+  return (
+    <div className="app-shell grain">
+      <header className="topbar">
+        <div className="mx-auto flex max-w-[1380px] items-center justify-between px-5 py-4 lg:px-9">
+          <Link href="/" className="flex items-center gap-3 text-inherit no-underline" data-testid="link-home-brand">
+            <img src={vallLogo} className="h-10 w-10 rounded-lg object-cover" alt="Vall Business" />
+            <img src={antrArtwork} className="h-10 w-10 rounded-lg object-cover" alt="Illustration ANTR, utilisée à titre de démonstration" />
+            <div>
+              <div className="serif text-[17px] font-extrabold leading-tight tracking-wide">ANTR <span className="font-medium">TRANSPORT</span></div>
+              <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-[.19em] text-[#c9dcd1]">Outil de démonstration</div>
+            </div>
+          </Link>
+          <div className="hidden items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-[#e9f1e9] sm:flex">
+            <MapPin size={14} /> Kinshasa · RDC
+          </div>
+          <div className="flex items-center gap-2 text-xs font-medium text-[#d8e7dc]">
+            <span className="h-2 w-2 rounded-full bg-[#e5a469]" />
+            MODE DÉMO
+          </div>
+        </div>
+      </header>
+      <div className="mx-auto grid max-w-[1380px] lg:grid-cols-[224px_minmax(0,1fr)]">
+        <aside className="hidden min-h-[calc(100dvh-73px)] border-r border-[#e2ddcf] px-4 py-8 lg:block">
+          <div className="mb-3 px-3 text-[10px] font-bold uppercase tracking-[.18em] text-[#929286]">Espace de travail</div>
+          <nav className="space-y-1">
+            {links.map(({ href, label, icon: Icon }) => {
+              const active = href === '/' ? path === '/' : path === href || (href === '/records' && path.startsWith('/verify/'));
+              return <Link key={href} href={href} data-testid={`nav-${href === '/' ? 'overview' : href.slice(1)}`}
+                className={`flex items-center gap-3 rounded-xl px-3 py-3 text-[13px] font-semibold no-underline transition-colors ${active ? 'bg-[#e3ece4] text-[#185d4b]' : 'text-[#66716b] hover:bg-[#eeece3] hover:text-[#23483e]'}`}>
+                <Icon size={17} strokeWidth={1.8} /><span>{label}</span>{active && <ChevronRight className="ml-auto" size={14} />}
+              </Link>;
+            })}
+          </nav>
+          <div className="mt-10 rounded-2xl border border-[#e6cda9] bg-[#fff4df] p-4">
+            <div className="mb-2 flex items-center gap-2 text-[#a45b2e]"><ShieldAlert size={16} /><span className="text-[10px] font-bold uppercase tracking-wider">À savoir</span></div>
+            <p className="m-0 text-xs leading-[1.6] text-[#725843]">Les reçus et montants affichés sont des exemples. Aucune autorisation officielle n’est délivrée.</p>
+          </div>
+          <div className="mt-7 px-3 text-[11px] leading-relaxed text-[#929286]">Prototype indépendant<br />Non affilié à une administration.</div>
+        </aside>
+        <main className="mobile-content min-w-0 px-4 py-6 sm:px-6 lg:px-10 lg:py-9">
+          {children}
+          <footer className="mt-12 border-t border-[#e4dfd3] py-5 text-center text-[11px] leading-relaxed text-[#85887f]">
+            Démonstration non officielle · Aucun paiement réel · Aucune autorisation gouvernementale
+          </footer>
+        </main>
+      </div>
+      <nav className="mobile-nav lg:hidden" aria-label="Navigation principale">
+        <div className="mx-auto flex max-w-md justify-around">
+          {links.map(({ href, label, icon: Icon }) => {
+            const active = href === '/' ? path === '/' : path === href || (href === '/records' && path.startsWith('/verify/'));
+            return <Link key={href} href={href} data-testid={`mobile-nav-${href === '/' ? 'overview' : href.slice(1)}`}
+              className={`flex min-w-[82px] flex-col items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold no-underline ${active ? 'text-[#f1c28c]' : 'text-[#c6d9ce]'}`}>
+              <Icon size={19} strokeWidth={active ? 2.2 : 1.7} /><span>{label}</span>
+            </Link>;
+          })}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+function PageHeading({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children?: ReactNode }) {
+  return <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+    <div><div className="mb-2 text-[10px] font-bold uppercase tracking-[.2em] text-[#25806b]">{eyebrow}</div>
+      <h1 className="serif m-0 text-[30px] font-extrabold leading-tight tracking-[-.04em] text-[#22332f] sm:text-[36px]">{title}</h1>
+      <p className="mb-0 mt-2 max-w-2xl text-[14px] leading-relaxed text-[#72786f]">{description}</p>
+    </div>{children}
+  </div>;
+}
+
+function DemoNotice({ compact = false }: { compact?: boolean }) {
+  return <div className={`flex items-start gap-3 rounded-xl border border-[#eed4b5] bg-[#fff3df] text-[#765739] ${compact ? 'p-3' : 'p-4'}`}>
+    <ShieldAlert className="mt-0.5 shrink-0 text-[#bd7441]" size={17} />
+    <div className="text-xs leading-relaxed"><strong className="font-bold">Démonstration uniquement.</strong> Aucune somme n’est encaissée et ce document ne constitue ni permis, ni preuve officielle, ni autorisation de transport.</div>
+  </div>;
+}
+
+function ErrorPanel({ message, retry }: { message: string; retry: () => void }) {
+  return <div className="rounded-2xl border border-[#eac5b9] bg-[#fff5f0] p-6 text-[#723f31]">
+    <div className="flex items-start gap-3"><AlertCircle size={19} className="mt-0.5 shrink-0" /><div className="flex-1"><div className="font-bold">Impossible de charger ces données</div><p className="mb-4 mt-1 text-sm leading-relaxed">{message || 'Vérifiez votre connexion puis réessayez.'}</p>
+      <button type="button" onClick={retry} className="rounded-lg border border-[#d9aa98] px-3 py-2 text-xs font-bold hover:bg-[#ffebe2]" data-testid="button-retry">Réessayer</button>
+    </div></div>
+  </div>;
+}
+
+function Dashboard() {
+  const summary = useGetDashboardSummary();
+  const { data, isLoading, isError, error, refetch } = summary;
+  const breakdown = data?.byCategory ?? [];
+  return <div className="page-enter">
+    <PageHeading eyebrow="Tableau de bord · Kinshasa" title="Suivi des dossiers démo" description="Un aperçu des reçus de démonstration enregistrés sur cet outil indépendant.">
+      <Link href="/new" className="btn-primary inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold no-underline" data-testid="link-create-record"><FilePlus2 size={17} /> Enregistrer un exemple</Link>
+    </PageHeading>
+    <div className="mb-6"><DemoNotice /></div>
+    {isError ? <ErrorPanel message={String((error as Error)?.message ?? '')} retry={() => void refetch()} /> : <>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric title="Exemples enregistrés aujourd’hui" value={isLoading ? null : data?.recordsToday} label="Dossiers démo" icon={Clock3} accent="green" />
+        <Metric title="Total des dossiers démo" value={isLoading ? null : data?.totalRecords} label="Depuis le démarrage" icon={FileCheck2} accent="sand" />
+        <Metric title="Montants illustratifs cumulés" value={isLoading ? null : money(data?.totalFc)} label="FC · sans encaissement" icon={ArrowDownRight} accent="orange" />
+      </div>
+      <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(280px,.8fr)]">
+        <section className="overflow-hidden rounded-2xl border border-[#e4dfd2] bg-[#fffdf8]">
+          <div className="flex items-center justify-between border-b border-[#ece7dc] px-5 py-4">
+            <div><h2 className="m-0 text-[15px] font-bold text-[#263831]">Dossiers récents</h2><p className="m-0 mt-1 text-xs text-[#888a80]">Derniers reçus de démonstration</p></div>
+            <Link href="/records" className="inline-flex items-center gap-1 text-xs font-bold text-[#1c705b] no-underline" data-testid="link-all-records">Tout voir <ArrowRight size={14} /></Link>
+          </div>
+          {isLoading ? <RecordSkeleton /> : data?.recentRecords?.length ? <div className="divide-y divide-[#eee9df]">
+            {data.recentRecords.slice(0, 6).map(record => <RecordRow key={record.id} record={record} />)}
+          </div> : <EmptyRecords />}
+        </section>
+        <section className="rounded-2xl border border-[#e4dfd2] bg-[#fffdf8] p-5">
+          <div className="mb-5"><h2 className="m-0 text-[15px] font-bold text-[#263831]">Répartition par véhicule</h2><p className="m-0 mt-1 text-xs text-[#888a80]">Totaux démonstratifs uniquement</p></div>
+          {isLoading ? <div className="space-y-4">{[0,1,2].map(i => <div key={i} className="skeleton h-12 rounded-lg" />)}</div> :
+            breakdown.length ? <div className="space-y-3">{breakdown.map(item => {
+              const Icon = categoryIcons[item.vehicleCategory];
+              const total = data?.totalRecords || 1;
+              return <div key={item.vehicleCategory} className="rounded-xl bg-[#f5f3eb] p-3.5">
+                <div className="flex items-center justify-between"><div className="flex items-center gap-2.5"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#e3ece4] text-[#1e6a57]"><Icon size={16} /></span><span className="text-sm font-semibold">{categoryNames[item.vehicleCategory]}</span></div><span className="mono text-xs text-[#5d685f]">{item.count} dossier{item.count > 1 ? 's' : ''}</span></div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#e2dfd5]"><div className="h-full rounded-full bg-[#2c806b]" style={{ width: `${Math.min(100, item.count / total * 100)}%` }} /></div>
+                <div className="mt-2 text-right text-[11px] text-[#85877e]">{money(item.amountFc)} · exemple</div>
+              </div>;
+            })}</div> : <div className="rounded-xl border border-dashed border-[#dcd7ca] px-4 py-9 text-center text-sm text-[#86887f]">Les catégories apparaîtront après le premier enregistrement démo.</div>}
+          <div className="mt-4 flex items-start gap-2 border-t border-[#ece7dc] pt-4 text-[11px] leading-relaxed text-[#8b8d83]"><CircleHelp size={14} className="mt-0.5 shrink-0" />Les montants sont indicatifs et ne correspondent à aucun paiement réel.</div>
+        </section>
+      </div>
+    </>}
+  </div>;
+}
+
+function Metric({ title, value, label, icon: Icon, accent }: { title: string; value: number | string | null | undefined; label: string; icon: typeof Clock3; accent: string }) {
+  return <div className="rounded-2xl border border-[#e4dfd2] bg-[#fffdf8] p-5">
+    <div className="flex items-start justify-between gap-2"><div className="text-xs font-semibold leading-relaxed text-[#777d73]">{title}</div><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${accent === 'green' ? 'bg-[#e3ece4] text-[#1b6a56]' : accent === 'orange' ? 'bg-[#f9e7d8] text-[#b16a37]' : 'bg-[#eeeadc] text-[#74694e]'}`}><Icon size={17} /></span></div>
+    <div className={`serif mt-3 min-h-[36px] text-[29px] font-extrabold tracking-tight text-[#263b34] ${value === null ? 'skeleton rounded-md' : ''}`} data-testid={`metric-${title.toLowerCase().replaceAll(' ', '-')}`}>{value === null ? '' : value ?? '—'}</div>
+    <div className="mt-1 text-[11px] text-[#929288]">{label}</div>
+  </div>;
+}
+
+function RecordRow({ record }: { record: TransportRecord }) {
+  const Icon = categoryIcons[record.vehicleCategory];
+  return <div className="flex items-center gap-3 px-5 py-4" data-testid={`record-row-${record.id}`}>
+    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#e9eee5] text-[#276b59]"><Icon size={17} /></div>
+     <div className="min-w-0 flex-1"><div className="truncate text-sm font-bold text-[#293a34]">{record.driverName}</div><div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-[#8b8e84]"><span className="mono">{record.licensePlate}</span><span>·</span><span>{record.vehicleMake} {record.vehicleModel}</span><span>·</span><span>{record.serviceDate} {record.shiftStart ?? ''}–{record.shiftEnd ?? ''}</span></div></div>
+    <div className="text-right"><div className="mono text-xs font-medium text-[#4a6258]">{money(record.amountFc)}</div><div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-[#a46b41]">Démo</div></div>
+    <Link href={record.verificationPath || `/verify/${record.id}`} className="ml-1 rounded-lg p-2 text-[#638076] hover:bg-[#edf1e9]" aria-label={`Vérifier le dossier ${record.driverName}`} data-testid={`link-verify-${record.id}`}><ArrowRight size={16} /></Link>
+  </div>;
+}
+
+function EmptyRecords() {
+  return <div className="px-6 py-12 text-center">
+    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#edf0e7] text-[#43816e]"><FileCheck2 size={21} /></div>
+    <h3 className="m-0 text-sm font-bold text-[#304039]">Aucun dossier pour le moment</h3>
+    <p className="mx-auto mb-4 mt-1 max-w-xs text-xs leading-relaxed text-[#85877e]">Enregistrez un exemple pour afficher son reçu et son lien de vérification.</p>
+    <Link href="/new" className="inline-flex items-center gap-2 rounded-lg bg-[#e4eee6] px-3 py-2 text-xs font-bold text-[#1c6b56] no-underline" data-testid="link-empty-create">Créer un exemple <ArrowRight size={13} /></Link>
+  </div>;
+}
+function RecordSkeleton() {
+  return <div className="divide-y divide-[#eee9df]">{[0,1,2].map(i => <div key={i} className="flex items-center gap-3 px-5 py-4"><div className="skeleton h-9 w-9 rounded-xl" /><div className="flex-1 space-y-2"><div className="skeleton h-3 w-1/3 rounded" /><div className="skeleton h-2.5 w-1/2 rounded" /></div><div className="skeleton h-3 w-16 rounded" /></div>)}</div>;
+}
+
+function Records() {
+  const [search, setSearch] = useState('');
+  const [serviceDate, setServiceDate] = useState('');
+  const [incidentTime, setIncidentTime] = useState('');
+  const params = useMemo(() => {
+    const next = { ...(search.trim() ? { search: search.trim() } : {}), ...(serviceDate ? { serviceDate } : {}), ...(incidentTime ? { incidentTime } : {}) };
+    return Object.keys(next).length ? next : undefined;
+  }, [search, serviceDate, incidentTime]);
+  const query = useListTransportRecords(params);
+  const records = query.data ?? [];
+  return <div className="page-enter">
+    <PageHeading eyebrow="Registre de démonstration" title="Dossiers enregistrés" description="Recherchez par plaque, permis ou nom. Pour retrouver un conducteur au moment d’un incident, renseignez ensemble la date et l’heure." />
+    <div className="mb-6"><DemoNotice compact /></div>
+    <section className="overflow-hidden rounded-2xl border border-[#e4dfd2] bg-[#fffdf8]">
+      <div className="flex flex-col gap-4 border-b border-[#ece7dc] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <div><div className="text-sm font-bold text-[#2c3e36]">Registre des reçus démo</div><div className="mt-1 text-xs text-[#898b81]">{query.isLoading ? 'Chargement…' : `${records.length} dossier${records.length === 1 ? '' : 's'} trouvé${records.length === 1 ? '' : 's'} · données de démonstration`}</div></div>
+         <div className="grid w-full gap-2 sm:max-w-[580px] sm:grid-cols-[1fr_155px_125px]">
+          <label className="relative block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#858a80]" size={16} />
+          <input value={search} onChange={e => setSearch(e.target.value)} type="search" placeholder="Nom, plaque, permis ou modèle" className="field-input !py-2.5 !pl-9 !text-[13px]" aria-label="Rechercher par nom, plaque, permis ou modèle" data-testid="input-record-search" />
+          {search && <button onClick={() => setSearch('')} type="button" className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-[#81867d] hover:bg-[#efede5]" aria-label="Effacer la recherche" data-testid="button-clear-search"><X size={15} /></button>}
+          </label>
+          <label className="sr-only" htmlFor="records-service-date">Filtrer par date de service</label><input id="records-service-date" value={serviceDate} onChange={event => setServiceDate(event.target.value)} type="date" className="field-input !py-2.5 !text-[12px]" aria-label="Filtrer par date de service" data-testid="input-filter-service-date" />
+          <label className="sr-only" htmlFor="records-incident-time">Heure de l’incident</label><input id="records-incident-time" value={incidentTime} onChange={event => setIncidentTime(event.target.value)} type="time" className="field-input !py-2.5 !text-[12px]" aria-label="Filtrer par heure de l’incident" data-testid="input-filter-incident-time" />
+         </div>
+      </div>
+      {query.isError ? <div className="p-5"><ErrorPanel message={String((query.error as Error)?.message ?? '')} retry={() => void query.refetch()} /></div>
+        : query.isLoading ? <RecordSkeleton />
+          : records.length ? <div className="table-scroll"><table className="w-full min-w-[760px] border-collapse text-left">
+            <thead><tr className="bg-[#f7f5ee] text-[10px] font-bold uppercase tracking-[.12em] text-[#81867d]"><th className="px-5 py-3">Conducteur</th><th className="px-4 py-3">Véhicule</th><th className="px-4 py-3">Permis démo</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Montant exemple</th><th className="px-5 py-3 text-right">Contrôle</th></tr></thead>
+            <tbody>{records.map(record => <tr key={record.id} className="border-t border-[#eee9df] transition-colors hover:bg-[#faf9f4]" data-testid={`table-record-${record.id}`}>
+              <td className="px-5 py-4"><div className="text-[13px] font-bold text-[#283a33]">{record.driverName}</div><div className="mono mt-1 text-[11px] text-[#82877e]">{record.licensePlate}</div></td>
+               <td className="px-4 py-4"><div className="inline-flex items-center gap-2 text-xs text-[#59645d]">{(() => { const Icon = categoryIcons[record.vehicleCategory]; return <Icon size={15} />; })()}{record.categoryLabel || categoryNames[record.vehicleCategory]}</div><div className="mt-1 text-[11px] text-[#80867c]">{record.vehicleMake} {record.vehicleModel} · {record.vehicleYear ?? '—'} · {record.wheelCount ?? '—'} roues</div></td>
+              <td className="mono px-4 py-4 text-xs text-[#637168]">{record.permitNumber}</td>
+               <td className="px-4 py-4 text-xs text-[#777e75]"><div>{record.serviceDate}</div><div className="mt-1 text-[10px]">{record.shiftStart ?? '—'}–{record.shiftEnd ?? '—'}</div></td>
+              <td className="mono px-4 py-4 text-xs text-[#4d655a]">{money(record.amountFc)} <span className="font-sans text-[10px] text-[#999b91]">démo</span></td>
+              <td className="px-5 py-4 text-right"><Link href={record.verificationPath || `/verify/${record.id}`} className="inline-flex items-center gap-1.5 rounded-lg border border-[#d3e0d4] bg-[#eff4ed] px-3 py-2 text-xs font-bold text-[#286551] no-underline hover:bg-[#e4eee3]" data-testid={`button-open-verify-${record.id}`}>Vérifier <ArrowRight size={13} /></Link></td>
+            </tr>)}</tbody>
+          </table></div>
+            : <EmptyRecords />}
+    </section>
+    <div className="mt-4 text-[11px] leading-relaxed text-[#8b8d83]">Tous les dossiers et montants de ce registre sont fictifs, à des fins de démonstration uniquement.</div>
+  </div>;
+}
+
+function NewRecord() {
+  const queryClient = useQueryClient();
+  const create = useCreateTransportRecord();
+  const [receipt, setReceipt] = useState<TransportRecord | null>(null);
+  const [lookupPermit, setLookupPermit] = useState('');
+  const form = useForm<RecordFormValues>({
+    resolver: zodResolver(recordFormSchema),
+    defaultValues: {
+      driverName: '',
+      permitNumber: '',
+      licensePlate: '',
+      vehicleMake: 'Toyota',
+      vehicleModel: 'IST',
+      vehicleYear: 2007,
+      wheelCount: 4,
+      vehicleCategory: 'taxi',
+      serviceDate: todayInKinshasa(),
+      shiftStart: '06:00',
+      shiftEnd: '18:00',
+    },
+  });
+  const [validation, setValidation] = useState('');
+  const permitText = form.watch('permitNumber');
+  useEffect(() => {
+    const value = permitText.trim();
+    if (value.length < 4) {
+      setLookupPermit('');
+      return;
+    }
+    const timer = window.setTimeout(() => setLookupPermit(value), 350);
+    return () => window.clearTimeout(timer);
+  }, [permitText]);
+  const permitLookup = useListTransportRecords(
+    { search: lookupPermit || '__demo_permit_lookup_disabled__' },
+    {
+      query: {
+        queryKey: getListTransportRecordsQueryKey({
+          search: lookupPermit || '__demo_permit_lookup_disabled__',
+        }),
+        enabled: lookupPermit.length >= 4,
+        staleTime: 30_000,
+      },
+    },
+  );
+  const permitMatches = useMemo(() => {
+    const currentPermit = normalizePermit(permitText);
+    if (
+      currentPermit.length < 4 ||
+      normalizePermit(lookupPermit) !== currentPermit
+    ) {
+      return [];
+    }
+    return (permitLookup.data ?? []).filter(
+      record => normalizePermit(record.permitNumber) === currentPermit,
+    );
+  }, [lookupPermit, permitLookup.data, permitText]);
+  const permitNameConflict =
+    new Set(permitMatches.map(record => record.driverName.trim().toLowerCase()))
+      .size > 1;
+  const matchedPermitRecord = permitNameConflict ? undefined : permitMatches[0];
+  useEffect(() => {
+    if (!matchedPermitRecord) return;
+    form.setValue('driverName', matchedPermitRecord.driverName, {
+      shouldValidate: true,
+    });
+    if (matchedPermitRecord.vehicleMake) {
+      form.setValue('vehicleMake', matchedPermitRecord.vehicleMake, {
+        shouldValidate: true,
+      });
+    }
+    if (matchedPermitRecord.vehicleModel) {
+      form.setValue('vehicleModel', matchedPermitRecord.vehicleModel, {
+        shouldValidate: true,
+      });
+    }
+    if (matchedPermitRecord.vehicleYear) {
+      form.setValue('vehicleYear', matchedPermitRecord.vehicleYear, {
+        shouldValidate: true,
+      });
+    }
+    if (matchedPermitRecord.wheelCount) {
+      form.setValue('wheelCount', matchedPermitRecord.wheelCount, {
+        shouldValidate: true,
+      });
+    }
+    form.setValue(
+      'vehicleCategory',
+      inputCategoryForRecord(matchedPermitRecord.vehicleCategory),
+      { shouldValidate: true },
+    );
+  }, [matchedPermitRecord?.id]);
+  const submit = form.handleSubmit(values => {
+    setValidation('');
+    create.mutate({
+      data: {
+        ...values,
+        licensePlate: values.licensePlate.toUpperCase(),
+      },
+    }, {
+      onSuccess: record => {
+        setReceipt(record);
+        void queryClient.invalidateQueries({ queryKey: getListTransportRecordsQueryKey() });
+        void queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+        void queryClient.invalidateQueries({ queryKey: getGetTransportRecordQueryKey(record.id) });
+        void queryClient.invalidateQueries({ queryKey: getVerifyTransportRecordQueryKey(record.id) });
+      },
+      onError: error => {
+        const apiError = error as Error & { status?: number; data?: { error?: string } };
+        const detail = String(apiError.data?.error ?? apiError.message ?? '');
+        const isConflict = apiError.status === 409 || /409|conflict/i.test(detail);
+        if (/permis/i.test(detail)) {
+          setValidation(detail);
+        } else if (isConflict || /chevauch|créneau|horaire/i.test(detail)) {
+          setValidation('Ce véhicule possède déjà un créneau qui chevauche ces heures. Choisissez un autre horaire.');
+        } else {
+          setValidation(detail || 'L’enregistrement a échoué. Vérifiez les informations et réessayez.');
+        }
+      },
+    });
+  });
+  if (receipt) return <Receipt record={receipt} onNew={() => { setReceipt(null); form.reset(); setValidation(''); }} />;
+  const categories = categoryChoices;
+  const suggestions = vehicleSuggestions[form.watch('vehicleCategory')];
+  return <div className="page-enter">
+    <PageHeading eyebrow="Nouvel exemple" title="Enregistrer un reçu démo" description="Saisissez les informations du véhicule. Un enregistrement de démonstration sera créé, sans paiement." />
+    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
+      <Form {...form}>
+        <form onSubmit={submit} className="rounded-2xl border border-[#e4dfd2] bg-[#fffdf8] p-5 sm:p-7" data-testid="form-new-record">
+          <div className="mb-6 flex items-center gap-3 border-b border-[#ece7dc] pb-5"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#e5eee5] text-[#246b58]"><FilePlus2 size={19} /></div><div><div className="text-sm font-bold text-[#2d3e36]">Informations du dossier</div><div className="mt-1 text-xs text-[#898b81]">Champs requis · utilisés pour cet exemple uniquement</div></div></div>
+          {validation && <div role="alert" className="mb-5 rounded-xl border border-[#ecc6b7] bg-[#fff3ee] p-3 text-xs leading-relaxed text-[#804735]" data-testid="status-create-error">{validation}</div>}
+          <datalist id="vehicle-makes">{suggestions.makes.map(make => <option key={make} value={make} />)}</datalist>
+          <datalist id="vehicle-models">{suggestions.models.map(model => <option key={model} value={model} />)}</datalist>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <FormField control={form.control} name="driverName" render={({ field }) => (
+              <FormItem>
+                <FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Nom du conducteur</FormLabel>
+                <FormControl><input {...field} className="field-input" placeholder="Ex. Conducteur démo 04" autoComplete="off" data-testid="input-driver-name" /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="permitNumber" render={({ field }) => (
+              <FormItem>
+                <FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Numéro de permis (démo)</FormLabel>
+                <FormControl><input {...field} className="field-input" placeholder="Ex. DEM-PERMIS-0004" autoComplete="off" data-testid="input-permit-number" /></FormControl>
+                <FormMessage />
+                {permitText.trim().length >= 4 && normalizePermit(lookupPermit) === normalizePermit(permitText) && (
+                  permitLookup.isFetching
+                    ? <p className="mt-2 text-[11px] text-[#717b86]" role="status" data-testid="status-permit-lookup">Recherche parmi les exemples fictifs…</p>
+                    : permitLookup.isError
+                      ? <p className="mt-2 text-[11px] text-[#8b6044]" role="status" data-testid="status-permit-lookup">Recherche démo indisponible. Vous pouvez continuer avec des données fictives.</p>
+                      : permitNameConflict
+                        ? <p className="mt-2 text-[11px] leading-relaxed text-[#9a4b36]" role="alert" data-testid="status-permit-lookup">Ce numéro de permis démo apparaît avec plusieurs noms. Vérifiez les informations avant de continuer.</p>
+                        : permitMatches.length
+                          ? <p className="mt-2 text-[11px] leading-relaxed text-[#1769aa]" role="status" data-testid="status-permit-lookup">Exemple correspondant trouvé : le conducteur et le véhicule ont été préremplis. Vérifiez les champs avant de créer un nouveau reçu.</p>
+                          : <p className="mt-2 text-[11px] text-[#717b86]" role="status" data-testid="status-permit-lookup">Aucun exemple ne correspond à ce numéro.</p>
+                )}
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="licensePlate" render={({ field }) => (
+              <FormItem>
+                <FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Plaque (fictive)</FormLabel>
+                <FormControl><input {...field} className="field-input" placeholder="Ex. DEMO-04" autoComplete="off" data-testid="input-license-plate" /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="vehicleMake" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Marque du véhicule</FormLabel><FormControl><input {...field} list="vehicle-makes" className="field-input" placeholder="Saisissez ou choisissez une marque" autoComplete="off" data-testid="input-vehicle-make" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="vehicleModel" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Modèle du véhicule</FormLabel><FormControl><input {...field} list="vehicle-models" className="field-input" placeholder="Saisissez ou choisissez un modèle" autoComplete="off" data-testid="input-vehicle-model" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="vehicleYear" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Année du véhicule</FormLabel><FormControl><input {...field} type="number" min="1950" max="2100" className="field-input" data-testid="input-vehicle-year" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="wheelCount" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Nombre de roues</FormLabel><FormControl><input {...field} type="number" min="2" max="18" className="field-input" data-testid="input-wheel-count" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="vehicleCategory" render={({ field }) => (
+              <FormItem className="sm:col-span-2">
+                <FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Catégorie de véhicule</FormLabel>
+                <FormControl>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3" role="group" aria-label="Catégorie de véhicule">
+                    {categories.map(category => {
+                      const Icon = categoryIcons[category];
+                      const selected = field.value === category;
+                      return <button key={category} type="button" aria-pressed={selected} onClick={() => field.onChange(category)}
+                        className={`flex min-h-[74px] items-center gap-3 rounded-xl border px-3.5 text-left transition-colors ${selected ? 'border-[#5c9985] bg-[#edf4ed] text-[#1d634f]' : 'border-[#e4dfd2] bg-[#fffdf8] text-[#5d6c62] hover:bg-[#f6f4ed]'}`}
+                        data-testid={`button-category-${category}`}>
+                        <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${selected ? 'bg-[#d8e9dc]' : 'bg-[#f0eee5]'}`}><Icon size={18} /></span>
+                        <span className="flex-1"><span className="block text-xs font-bold">{categoryNames[category]}</span><span className="mt-1 block text-[10px] text-[#8a8d82]">{categoryDescriptions[category]}</span></span>
+                        {selected && <Check size={15} />}
+                      </button>;
+                    })}
+                  </div>
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="serviceDate" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Date de service</FormLabel><FormControl><input {...field} type="date" className="field-input" data-testid="input-service-date" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="shiftStart" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Début du service</FormLabel><FormControl><input {...field} type="time" className="field-input" data-testid="input-shift-start" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <FormField control={form.control} name="shiftEnd" render={({ field }) => (
+              <FormItem><FormLabel className="mb-2 block text-[13px] font-bold text-[#34453e]">Fin du service</FormLabel><FormControl><input {...field} type="time" className="field-input" data-testid="input-shift-end" /></FormControl><FormMessage /></FormItem>
+            )} />
+            <div className="sm:col-span-2 flex items-center justify-between rounded-xl border border-[#d8dce2] bg-[#f1f4f7] px-4 py-3" aria-live="polite" data-testid="text-category-amount">
+              <span className="text-xs font-semibold text-[#526174]">Montant indicatif calculé par catégorie</span>
+              <strong className="mono text-sm text-[#173c68]">{money(categoryRates[form.watch('vehicleCategory')])}</strong>
+            </div>
+          </div>
+          <div className="mt-6"><DemoNotice compact /></div>
+          <button type="submit" disabled={create.isPending} className="btn-primary mt-6 flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-bold" data-testid="button-submit-record">
+            {create.isPending ? <><span className="h-4 w-4 animate-pulse rounded-full border-2 border-white/40 border-t-white" /> Enregistrement de démonstration…</> : <>Créer le reçu de démonstration <ArrowRight size={16} /></>}
+          </button>
+        </form>
+      </Form>
+      <aside className="space-y-4">
+        <div className="rounded-2xl bg-[#164f43] p-5 text-[#f3f0e5]">
+          <div className="mb-4 flex items-center gap-2 text-[#e6bf91]"><ShieldCheck size={17} /><span className="text-[10px] font-bold uppercase tracking-[.16em]">Ce que fait cet outil</span></div>
+          <p className="m-0 text-[13px] leading-relaxed text-[#e2e9de]">Il sauvegarde les informations d’un exemple et permet de confirmer ce même enregistrement avec son lien de vérification.</p>
+          <div className="mt-5 space-y-3 border-t border-white/15 pt-4 text-xs text-[#cadbd0]">
+            <div className="flex items-center gap-2.5"><Check size={14} className="text-[#e5bc8c]" /> Reçu numérique de démonstration</div>
+            <div className="flex items-center gap-2.5"><Check size={14} className="text-[#e5bc8c]" /> Lien unique de contrôle</div>
+            <div className="flex items-center gap-2.5"><X size={14} className="text-[#e5bc8c]" /> Aucun paiement effectué</div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-[#e4dfd2] bg-[#fffdf8] p-5"><div className="text-xs font-bold text-[#35473e]">Données demandées</div><p className="mb-0 mt-2 text-xs leading-relaxed text-[#83877e]">Ce prototype conserve les données saisies. N’utilisez que des exemples fictifs — ne saisissez pas de renseignements personnels réels.</p></div>
+      </aside>
+    </div>
+  </div>;
+}
+
+function Receipt({ record, onNew }: { record: TransportRecord; onNew: () => void }) {
+  const path = record.verificationPath || `/verify/${record.id}`;
+  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const href = path.startsWith('http')
+    ? path
+    : `${window.location.origin}${basePath}${path.startsWith('/') ? path : `/${path}`}`;
+  return <div className="page-enter mx-auto max-w-[860px]">
+    <div className="mb-6"><div className="mb-2 text-[10px] font-bold uppercase tracking-[.2em] text-[#25806b]">Enregistrement terminé</div><h1 className="serif m-0 text-[30px] font-extrabold tracking-[-.04em] text-[#22332f]">Reçu de démonstration</h1><p className="mb-0 mt-2 text-sm text-[#72786f]">L’exemple a été sauvegardé. Le lien ci-dessous confirme cet enregistrement précis.</p></div>
+    <div className="grid overflow-hidden rounded-2xl border border-[#ded8c9] bg-[#fffdf8] md:grid-cols-[1fr_260px]">
+      <div className="p-5 sm:p-8">
+        <div className="flex items-start justify-between border-b border-dashed border-[#d9d3c5] pb-5"><div><div className="text-[10px] font-bold uppercase tracking-[.18em] text-[#80867c]">ANTR Transport · Exemple</div><div className="serif mt-2 text-xl font-bold text-[#293d35]">Reçu enregistré</div></div><div className="rounded-full border border-[#e7d0b0] bg-[#fff2dd] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-[#9c653a]">Démonstration</div></div>
+        <div className="grid gap-x-5 gap-y-5 py-6 sm:grid-cols-2">
+          <ReceiptDatum label="Conducteur" value={record.driverName} />
+          <ReceiptDatum label="Catégorie" value={record.categoryLabel || categoryNames[record.vehicleCategory]} />
+          <ReceiptDatum label="Plaque" value={record.licensePlate} mono />
+          <ReceiptDatum label="Permis (démo)" value={record.permitNumber} mono />
+          <ReceiptDatum label="Véhicule" value={`${record.vehicleMake ?? ''} ${record.vehicleModel ?? ''} · ${record.vehicleYear ?? '—'}`} />
+          <ReceiptDatum label="Date et plage de service" value={`${record.serviceDate} · ${record.shiftStart ?? '—'}–${record.shiftEnd ?? '—'}`} mono />
+          <ReceiptDatum label="Montant illustratif" value={money(record.amountFc)} />
+          <ReceiptDatum label="Enregistré le" value={dateText(record.createdAt)} />
+        </div>
+        <div className="border-t border-dashed border-[#d9d3c5] pt-4">
+          <div className="text-[10px] font-bold uppercase tracking-[.13em] text-[#929389]">Référence du dossier démo</div>
+          <div className="mono mt-1.5 break-all text-xs text-[#50635a]" data-testid="text-receipt-id">{record.id}</div>
+        </div>
+        <div className="mt-5"><DemoNotice compact /></div>
+      </div>
+      <div className="flex flex-col items-center justify-center border-t border-[#e8e2d6] bg-[#f6f4ec] p-6 text-center md:border-l md:border-t-0">
+        <div className="text-[10px] font-bold uppercase tracking-[.15em] text-[#738078]">Lien de contrôle démo</div>
+        <div className="mt-4 rounded-lg border border-[#ddd8ca] bg-white p-[7px]">
+          <QRCodeSVG value={href} size={148} level="M" marginSize={0} title="QR code du lien de vérification de démonstration" />
+        </div>
+        <div className="mt-2 max-w-[200px] text-[10px] leading-relaxed text-[#878b81]">Scannez pour ouvrir la vérification de cet enregistrement démo.</div>
+        <Link href={path} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#1b6955] px-4 py-3 text-xs font-bold text-white no-underline hover:bg-[#145340]" data-testid="link-receipt-verify"><ShieldCheck size={15} /> Ouvrir la vérification</Link>
+        <button type="button" onClick={() => { void navigator.clipboard?.writeText(href); }} className="mt-2 inline-flex items-center gap-1.5 px-2 py-2 text-[11px] font-semibold text-[#687970] hover:text-[#1d6b56]" data-testid="button-copy-verification"><TicketCheck size={14} /> Copier le lien</button>
+      </div>
+    </div>
+    <div className="mt-5 flex flex-col justify-between gap-3 sm:flex-row">
+      <Link href="/records" className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#d9d4c8] bg-[#fffdf8] px-4 py-3 text-sm font-bold text-[#4c5d53] no-underline hover:bg-[#f4f2e9]" data-testid="link-receipt-records"><ArrowRight className="rotate-180" size={16} /> Voir les dossiers</Link>
+      <button type="button" onClick={onNew} className="btn-primary inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold" data-testid="button-new-after-receipt"><FilePlus2 size={16} /> Enregistrer un autre exemple</button>
+    </div>
+  </div>;
+}
+function ReceiptDatum({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return <div><div className="text-[10px] font-bold uppercase tracking-[.13em] text-[#929389]">{label}</div><div className={`mt-1.5 text-[13px] font-semibold text-[#34463d] ${mono ? 'mono' : ''}`}>{value || '—'}</div></div>;
+}
+function Verification() {
+  const params = useParams<{ recordId: string }>();
+  const id = params.recordId ?? '';
+  const verify = useVerifyTransportRecord(id, { query: { enabled: !!id, queryKey: getVerifyTransportRecordQueryKey(id) } });
+  const recordQuery = useGetTransportRecord(id, { query: { enabled: !!id, queryKey: getGetTransportRecordQueryKey(id) } });
+  const result = verify.data;
+  const record = result?.record ?? recordQuery.data ?? null;
+  const loading = verify.isLoading || recordQuery.isLoading;
+  const failed = verify.isError && recordQuery.isError;
+  return <div className="page-enter mx-auto max-w-[760px]">
+    <div className="mb-6"><div className="mb-2 text-[10px] font-bold uppercase tracking-[.2em] text-[#25806b]">Point de contrôle · Kinshasa</div><h1 className="serif m-0 text-[30px] font-extrabold tracking-[-.04em] text-[#22332f]">Vérification d’un dossier</h1><p className="mb-0 mt-2 text-sm leading-relaxed text-[#72786f]">Cette page contrôle le lien vers un enregistrement de démonstration sauvegardé.</p></div>
+    <div className="mb-5"><DemoNotice /></div>
+    {loading ? <div className="rounded-2xl border border-[#e4dfd2] bg-[#fffdf8] p-6"><div className="skeleton h-7 w-56 rounded" /><div className="skeleton mt-4 h-4 w-full rounded" /><div className="mt-6 grid gap-3 sm:grid-cols-2">{[0,1,2,3].map(i => <div key={i} className="skeleton h-16 rounded-xl" />)}</div></div>
+      : failed ? <ErrorPanel message={String((verify.error as Error)?.message ?? 'Le lien n’a pas pu être contrôlé.')} retry={() => { void verify.refetch(); void recordQuery.refetch(); }} />
+        : <VerificationCard valid={!!result?.valid} message={result?.message ?? (record ? 'Cet enregistrement de démonstration est disponible.' : 'Aucun enregistrement ne correspond à ce lien.')} record={record} id={id} />}
+    <Link href="/records" className="mt-5 inline-flex items-center gap-2 text-xs font-bold text-[#236c57] no-underline" data-testid="link-verification-records"><ArrowRight className="rotate-180" size={15} /> Retour au registre</Link>
+  </div>;
+}
+function VerificationCard({ valid, message, record, id }: { valid: boolean; message: string; record: TransportRecord | null; id: string }) {
+  return <section className="overflow-hidden rounded-2xl border border-[#e2ddcf] bg-[#fffdf8]">
+    <div className={`flex items-start gap-4 px-5 py-6 sm:px-7 ${valid ? 'bg-[#e8f1e8]' : 'bg-[#fff0e9]'}`}>
+      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${valid ? 'bg-[#d0e6d2] text-[#246c55]' : 'bg-[#f3d7c9] text-[#a34f38]'}`}>{valid ? <BadgeCheck size={23} /> : <AlertCircle size={23} />}</div>
+      <div><div className={`text-[17px] font-extrabold ${valid ? 'text-[#245943]' : 'text-[#93472f]'}`}>{valid ? 'Enregistrement démo trouvé' : 'Dossier non trouvé'}</div><p className={`mb-0 mt-1 text-sm leading-relaxed ${valid ? 'text-[#52695b]' : 'text-[#805b4e]'}`} data-testid="status-verification">{message}</p></div>
+    </div>
+    {record ? <div className="p-5 sm:p-7">
+      <div className="mb-5 flex items-center justify-between border-b border-[#ece7dc] pb-4"><div><div className="text-[10px] font-bold uppercase tracking-[.16em] text-[#858a80]">Détail de l’exemple sauvegardé</div><div className="mono mt-1.5 text-xs text-[#617168]">{shortId(record.id)}</div></div><span className="rounded-full border border-[#ead1ad] bg-[#fff3df] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-[#a06a3e]">DÉMO</span></div>
+      <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+        <ReceiptDatum label="Conducteur" value={record.driverName} />
+        <ReceiptDatum label="Catégorie" value={record.categoryLabel || categoryNames[record.vehicleCategory]} />
+        <ReceiptDatum label="Plaque" value={record.licensePlate} mono />
+        <ReceiptDatum label="Permis (démo)" value={record.permitNumber} mono />
+        <ReceiptDatum label="Véhicule" value={`${record.vehicleMake ?? ''} ${record.vehicleModel ?? ''} · ${record.vehicleYear ?? '—'}`} />
+        <ReceiptDatum label="Service prévu" value={`${record.serviceDate} · ${record.shiftStart ?? '—'}–${record.shiftEnd ?? '—'}`} mono />
+        <ReceiptDatum label="Montant illustratif" value={money(record.amountFc)} />
+        <ReceiptDatum label="Date d’enregistrement" value={dateText(record.createdAt)} />
+      </div>
+      <div className="mt-6"><DemoNotice compact /></div>
+    </div> : <div className="p-6"><div className="text-xs text-[#86897f]">Référence demandée</div><div className="mono mt-1 break-all text-xs text-[#57685f]" data-testid="text-invalid-record-id">{id}</div></div>}
+  </section>;
+}
+
+function Router() {
+  return <Switch>
+    <Route path="/"><AppFrame><Dashboard /></AppFrame></Route>
+    <Route path="/records"><AppFrame><Records /></AppFrame></Route>
+    <Route path="/new"><AppFrame><NewRecord /></AppFrame></Route>
+    <Route path="/verify/:recordId"><AppFrame><Verification /></AppFrame></Route>
+    <Route><NotFound /></Route>
+  </Switch>;
+}
+
+function App() {
+  const [splashOpen, setSplashOpen] = useState(true);
+  const [splashStage, setSplashStage] = useState<0 | 1>(0);
+  useEffect(() => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const stageTimer = window.setTimeout(
+      () => setSplashStage(1),
+      reducedMotion ? 200 : 700,
+    );
+    const closeTimer = window.setTimeout(
+      () => setSplashOpen(false),
+      reducedMotion ? 500 : 1600,
+    );
+    return () => {
+      window.clearTimeout(stageTimer);
+      window.clearTimeout(closeTimer);
+    };
+  }, []);
+  return <QueryClientProvider client={client}>
+    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><Router /></WouterRouter>
+    {splashOpen && <section className="splash" aria-label="Présentation des marques de démonstration" data-testid="splash-intro">
+      <button className="splash-dismiss" type="button" onClick={() => setSplashOpen(false)} aria-label="Fermer la présentation" data-testid="button-dismiss-splash">Passer</button>
+      <div key={splashStage} className="splash-stack" aria-live="polite">
+        <img
+          src={splashStage === 0 ? vallLogo : antrArtwork}
+          className={splashStage === 0 ? 'splash-vall' : 'splash-antr'}
+          alt={splashStage === 0 ? 'Logo Vall Business' : 'Illustration ANTR fournie, sans affiliation vérifiée'}
+          data-testid={splashStage === 0 ? 'splash-vall-logo' : 'splash-antr-logo'}
+        />
+        <div className="splash-label">{splashStage === 0 ? 'Vall Business' : 'ANTR Transport · image fournie'}</div>
+        <div className="flag-rule w-36" role="img" aria-label="Couleurs du drapeau de la République démocratique du Congo" />
+        <p className="max-w-xs px-5 text-center text-xs leading-relaxed text-[#d9e2ec]">Prototype indépendant. Aucune affiliation institutionnelle ni autorisation officielle n’est revendiquée.</p>
+      </div>
+    </section>}
+  </QueryClientProvider>;
+}
